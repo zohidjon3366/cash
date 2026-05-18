@@ -1,7 +1,7 @@
 {
   "name": "all-finance-cash-stage1-pro",
-  "version": "1.3.0",
-  "description": "ALL FINANCE CASH Stage 1.3 Final - salary, debts, payments, services, expenses, roles, audit and reports",
+  "version": "1.5.0",
+  "description": "ALL FINANCE CASH Stage 1.5 - archive view, editable initial data, company restore/delete snapshots, full change archive",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
