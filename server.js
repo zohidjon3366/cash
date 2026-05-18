@@ -1,5 +1,22 @@
 require('dotenv').config();
+console.log('=== ALL FINANCE CASH START DEBUG ===');
+console.log('NODE_VERSION:', process.version);
+console.log('PORT:', process.env.PORT);
+console.log('SUPABASE_URL exists:', !!process.env.SUPABASE_URL);
+console.log('SUPABASE_URL first chars:', process.env.SUPABASE_URL ? process.env.SUPABASE_URL.slice(0, 12) : 'MISSING');
+console.log('SUPABASE_SERVICE_ROLE_KEY exists:', !!process.env.SUPABASE_SERVICE_ROLE_KEY);
+console.log('JWT_SECRET exists:', !!process.env.JWT_SECRET);
+console.log('ADMIN_SETUP_TOKEN exists:', !!process.env.ADMIN_SETUP_TOKEN);
 
+process.on('uncaughtException', err => {
+  console.error('UNCAUGHT_EXCEPTION:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', err => {
+  console.error('UNHANDLED_REJECTION:', err);
+  process.exit(1);
+});
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
