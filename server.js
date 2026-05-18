@@ -397,6 +397,9 @@ function buildDashboard(selectedPeriodId, data) {
       total_debt: totalDebt,
       old_debt: oldDebt,
       current_debt: currentDebt,
+      expected_income: totalDebt,
+      expected_old_debt: oldDebt,
+      expected_current_debt: currentDebt,
       companies_count: companyRows.length
     },
     companies: companyRows.sort((a, b) => b.total_debt - a.total_debt || a.company_name.localeCompare(b.company_name)),
@@ -451,7 +454,7 @@ function asyncRoute(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
 
-app.get('/api/health', (req, res) => res.json({ ok: true, app: 'ALL FINANCE CASH', version: '1.5.0', time: new Date().toISOString() }));
+app.get('/api/health', (req, res) => res.json({ ok: true, app: 'ALL FINANCE CASH', version: '1.6.0', time: new Date().toISOString() }));
 
 app.post('/api/setup/create-admin', asyncRoute(async (req, res) => {
   const { setup_token, login, password, full_name } = req.body || {};
