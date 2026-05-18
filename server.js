@@ -128,6 +128,40 @@ async function getAllData() {
   return { companies, periods, salaryRates, payments, expenses, services, openingDebts, allocations };
 }
 
+function pickArchiveMeta(beforeValue, afterValue) {
+  const source = afterValue || beforeValue || {};
+  return {
+    company_id: source.company_id || source.id && String(source.table_name || '').includes('company') ? source.id : (source.company?.id || null),
+    period_id: source.period_id || null
+  };
+}
+
+async function writeArchiveRecord(req, action, tableName, recordId, beforeValue, afterValue, note = '') {
+  try {
+    const source = afterValue || beforeValue || {};
+    let company_id = source.company_id || null;
+    if (!company_id && tableName === 'afc_companies') company_id = recordId || source.id || null;
+    const period_id = source.period_id || null;
+    await supabase.from('afc_archive_records').insert({
+      user_id: req.user?.id || null,
+      user_login: req.user?.login || '',
+      user_role: req.user?.role || '',
+      action,
+      table_name: tableName,
+      record_id: recordId || null,
+      company_id,
+      period_id,
+      before_value: beforeValue || null,
+      after_value: afterValue || null,
+      note,
+      ip_address: req.ip || '',
+      user_agent: req.headers['user-agent'] || ''
+    });
+  } catch (e) {
+    if (!/does not exist|schema cache|relation .* does not exist/i.test(e.message || '')) console.warn('archive skipped:', e.message);
+  }
+}
+
 async function writeAudit(req, action, tableName, recordId, beforeValue, afterValue, note = '') {
   try {
     await supabase.from('afc_audit_logs').insert({
@@ -144,6 +178,7 @@ async function writeAudit(req, action, tableName, recordId, beforeValue, afterVa
   } catch (e) {
     console.warn('audit skipped:', e.message);
   }
+  await writeArchiveRecord(req, action, tableName, recordId, beforeValue, afterValue, note);
 }
 
 async function assertPeriodOpen(periodId) {
@@ -416,7 +451,7 @@ function asyncRoute(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
 
-app.get('/api/health', (req, res) => res.json({ ok: true, app: 'ALL FINANCE CASH', version: '1.3.0', time: new Date().toISOString() }));
+app.get('/api/health', (req, res) => res.json({ ok: true, app: 'ALL FINANCE CASH', version: '1.5.0', time: new Date().toISOString() }));
 
 app.post('/api/setup/create-admin', asyncRoute(async (req, res) => {
   const { setup_token, login, password, full_name } = req.body || {};
@@ -510,7 +545,7 @@ app.post('/api/companies', auth, requireAdmin, asyncRoute(async (req, res) => {
 app.put('/api/companies/:id', auth, requireAdmin, asyncRoute(async (req, res) => {
   const body = req.body || {};
   const { data: before } = await supabase.from('afc_companies').select('*').eq('id', req.params.id).single();
-  const row = { name: body.name, stir: body.stir || '', director_name: body.director_name || '', phone: body.phone || '', note: body.note || '', updated_at: new Date().toISOString() };
+  const row = { name: body.name, stir: body.stir || '', director_name: body.director_name || '', phone: body.phone || '', note: body.note || '', status: body.status || before?.status || 'active', updated_at: new Date().toISOString() };
   const { data, error } = await supabase.from('afc_companies').update(row).eq('id', req.params.id).select('*').single();
   if (error) throw error;
   await writeAudit(req, 'update', 'afc_companies', req.params.id, before, data, 'Korxona tahrirlandi');
@@ -525,6 +560,26 @@ app.delete('/api/companies/:id', auth, requireAdmin, asyncRoute(async (req, res)
   res.json({ company: data });
 }));
 
+
+app.put('/api/companies/:id/restore', auth, requireAdmin, asyncRoute(async (req, res) => {
+  const { data: before, error: beforeError } = await supabase.from('afc_companies').select('*').eq('id', req.params.id).single();
+  if (beforeError) throw beforeError;
+  const { data, error } = await supabase.from('afc_companies').update({ status: 'active', updated_at: new Date().toISOString() }).eq('id', req.params.id).select('*').single();
+  if (error) throw error;
+  await writeAudit(req, 'restore', 'afc_companies', req.params.id, before, data, 'Korxona arxivdan tiklandi');
+  res.json({ company: data });
+}));
+
+app.delete('/api/companies/:id/hard-delete', auth, requireAdmin, asyncRoute(async (req, res) => {
+  const { data: before, error: beforeError } = await supabase.from('afc_companies').select('*').eq('id', req.params.id).single();
+  if (beforeError) throw beforeError;
+  await writeAudit(req, 'hard_delete_requested', 'afc_companies', req.params.id, before, null, 'Korxonani bazadan butunlay o‘chirishdan oldin snapshot arxivga olindi');
+  const { error } = await supabase.from('afc_companies').delete().eq('id', req.params.id);
+  if (error) throw error;
+  await writeAudit(req, 'hard_delete', 'afc_companies', req.params.id, before, null, 'Korxona bazadan butunlay o‘chirildi');
+  res.json({ ok: true });
+}));
+
 app.post('/api/companies/:id/salary-rate', auth, requireAdmin, asyncRoute(async (req, res) => {
   const body = req.body || {};
   if (!body.effective_from) return res.status(400).json({ error: 'Qaysi sanadan amal qilishi majburiy' });
@@ -534,6 +589,45 @@ app.post('/api/companies/:id/salary-rate', auth, requireAdmin, asyncRoute(async 
   if (error) throw error;
   await writeAudit(req, 'insert', 'afc_salary_rates', data.id, null, data, 'Ish haqi summasi o‘zgartirildi');
   res.json({ salary_rate: data });
+}));
+
+
+app.get('/api/salary-rates/:id', auth, asyncRoute(async (req, res) => {
+  const { data, error } = await supabase.from('afc_salary_rates').select('*').eq('id', req.params.id).single();
+  if (error) throw error;
+  res.json({ salary_rate: data });
+}));
+
+app.put('/api/salary-rates/:id', auth, requireAdmin, asyncRoute(async (req, res) => {
+  const { data: before, error: beforeError } = await supabase.from('afc_salary_rates').select('*').eq('id', req.params.id).single();
+  if (beforeError) throw beforeError;
+  const body = req.body || {};
+  if (!body.effective_from) return res.status(400).json({ error: 'Qaysi sanadan amal qilishi majburiy' });
+  if (!body.note) return res.status(400).json({ error: 'O‘zgarish izohi majburiy' });
+  const row = {
+    amount_sum: moneyFromInputs(body.amount_sum, body.amount_usd, body.exchange_rate),
+    amount_usd: n(body.amount_usd),
+    exchange_rate: n(body.exchange_rate),
+    effective_from: body.effective_from,
+    note: body.note,
+    updated_at: new Date().toISOString()
+  };
+  const { data, error } = await supabase.from('afc_salary_rates').update(row).eq('id', req.params.id).select('*').single();
+  if (error) throw error;
+  await writeAudit(req, 'update', 'afc_salary_rates', req.params.id, before, data, 'Ish haqi boshlang‘ich/tarixiy summasi tahrirlandi');
+  res.json({ salary_rate: data });
+}));
+
+app.delete('/api/salary-rates/:id', auth, requireAdmin, asyncRoute(async (req, res) => {
+  const { data: before, error: beforeError } = await supabase.from('afc_salary_rates').select('*').eq('id', req.params.id).single();
+  if (beforeError) throw beforeError;
+  const { count, error: countError } = await supabase.from('afc_salary_rates').select('id', { count: 'exact', head: true }).eq('company_id', before.company_id);
+  if (countError) throw countError;
+  if ((count || 0) <= 1) return res.status(400).json({ error: 'Oxirgi ish haqi yozuvini o‘chirib bo‘lmaydi. Avval yangi summa kiriting.' });
+  const { error } = await supabase.from('afc_salary_rates').delete().eq('id', req.params.id);
+  if (error) throw error;
+  await writeAudit(req, 'delete', 'afc_salary_rates', req.params.id, before, null, 'Ish haqi tarixi yozuvi o‘chirildi');
+  res.json({ ok: true });
 }));
 
 app.get('/api/companies/:id/salary-history', auth, asyncRoute(async (req, res) => {
@@ -774,9 +868,28 @@ app.get('/api/audit-logs', auth, requireAdmin, asyncRoute(async (req, res) => {
   res.json({ logs: data || [] });
 }));
 
+
+app.get('/api/archive', auth, requireAdmin, asyncRoute(async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 300), 1000);
+  const [archivedCompanies, records, logs] = await Promise.all([
+    dbList('afc_companies', '*', { column: 'updated_at', ascending: false }).then(rows => rows.filter(r => r.status === 'archived')),
+    dbList('afc_archive_records', '*', { column: 'created_at', ascending: false }, true).then(rows => rows.slice(0, limit)),
+    dbList('afc_audit_logs', '*', { column: 'created_at', ascending: false }, true).then(rows => rows.slice(0, limit))
+  ]);
+  res.json({ archived_companies: archivedCompanies, records, logs });
+}));
+
+app.get('/api/archive/records/:id', auth, requireAdmin, asyncRoute(async (req, res) => {
+  const { data, error } = await supabase.from('afc_archive_records').select('*').eq('id', req.params.id).single();
+  if (error) throw error;
+  res.json({ record: data });
+}));
+
 app.get('/api/export/json', auth, asyncRoute(async (req, res) => {
   const data = await getAllData();
-  res.json({ exported_at: new Date().toISOString(), ...data });
+  const archiveRecords = await dbList('afc_archive_records', '*', { column: 'created_at', ascending: false }, true);
+  const auditLogs = await dbList('afc_audit_logs', '*', { column: 'created_at', ascending: false }, true);
+  res.json({ exported_at: new Date().toISOString(), ...data, archiveRecords, auditLogs });
 }));
 
 function csvEscape(v) { return `"${String(v ?? '').replace(/"/g, '""')}"`; }
@@ -870,4 +983,3 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => console.log(`ALL FINANCE CASH running on port ${PORT}`));
-  
