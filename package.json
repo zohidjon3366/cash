@@ -1,7 +1,7 @@
 {
   "name": "all-finance-cash-stage1-pro",
-  "version": "1.5.0",
-  "description": "ALL FINANCE CASH Stage 1.5 - archive view, editable initial data, company restore/delete snapshots, full change archive",
+  "version": "1.6.0",
+  "description": "ALL FINANCE CASH Stage 1.6 - compact dashboard/monthly UI, duplicate payment/expense, fixed profit chart, expected receivables and cleaner settings",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
