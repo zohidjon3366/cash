@@ -1,7 +1,7 @@
 {
   "name": "all-finance-cash-stage1-pro",
-  "version": "1.6.0",
-  "description": "ALL FINANCE CASH Stage 1.6 - compact dashboard/monthly UI, duplicate payment/expense, fixed profit chart, expected receivables and cleaner settings",
+  "version": "1.7.0",
+  "description": "ALL FINANCE CASH Stage 1.7 - company statuses and monthly salary skip control",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

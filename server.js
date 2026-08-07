@@ -115,7 +115,7 @@ async function dbList(table, select = '*', order = null, optional = false) {
 }
 
 async function getAllData() {
-  const [companies, periods, salaryRates, payments, expenses, services, openingDebts, allocations] = await Promise.all([
+  const [companies, periods, salaryRates, payments, expenses, services, openingDebts, allocations, companyPeriodStatuses] = await Promise.all([
     dbList('afc_companies', '*', { column: 'created_at', ascending: true }),
     dbList('afc_periods', '*', { column: 'year', ascending: false }),
     dbList('afc_salary_rates', '*', { column: 'effective_from', ascending: true }),
@@ -123,9 +123,10 @@ async function getAllData() {
     dbList('afc_expenses', '*', { column: 'expense_date', ascending: false }),
     dbList('afc_services', '*', { column: 'service_date', ascending: false }),
     dbList('afc_opening_debts', '*', { column: 'debt_date', ascending: false }, true),
-    dbList('afc_payment_allocations', '*', { column: 'created_at', ascending: true }, true)
+    dbList('afc_payment_allocations', '*', { column: 'created_at', ascending: true }, true),
+    dbList('afc_company_period_statuses', '*', { column: 'created_at', ascending: true }, true)
   ]);
-  return { companies, periods, salaryRates, payments, expenses, services, openingDebts, allocations };
+  return { companies, periods, salaryRates, payments, expenses, services, openingDebts, allocations, companyPeriodStatuses };
 }
 
 function pickArchiveMeta(beforeValue, afterValue) {
@@ -202,6 +203,33 @@ function activeSalaryForPeriod(companyId, period, salaryRates) {
   return { ...rate, amount_sum: moneyFromInputs(rate.amount_sum, rate.amount_usd, rate.exchange_rate), amount_usd: n(rate.amount_usd), exchange_rate: n(rate.exchange_rate) };
 }
 
+function companyPeriodStatus(companyId, periodId, data) {
+  return (data.companyPeriodStatuses || []).find(x => x.company_id === companyId && x.period_id === periodId) || null;
+}
+
+function statusLabel(value) {
+  const map = {
+    active: 'Faol',
+    problem: 'Muammoli',
+    paused: 'Vaqtincha to‘xtagan',
+    no_salary: 'Maosh hisoblanmaydi',
+    archived: 'Arxiv',
+    inactive: 'Faol emas'
+  };
+  return map[String(value || '').toLowerCase()] || (value || 'Faol');
+}
+
+function salaryEnabledFromStatus(company, periodStatus) {
+  // Korxona statusi vizual/filtr uchun. Hisob-kitobni buzmaslik uchun ish haqi
+  // faqat tanlangan davr statusi orqali o'chiriladi.
+  const periodValue = String(periodStatus?.status || '').toLowerCase();
+  if (periodStatus) {
+    if (['no_salary', 'paused', 'inactive'].includes(periodValue)) return false;
+    return periodStatus.salary_enabled !== false;
+  }
+  return true;
+}
+
 function openingDebtForCompanyPeriod(companyId, periodId, data) {
   const list = (data.openingDebts || []).filter(d => d.company_id === companyId && d.period_id === periodId).map(normalizeRowAmounts);
   return {
@@ -212,17 +240,31 @@ function openingDebtForCompanyPeriod(companyId, periodId, data) {
 }
 
 function chargedForCompanyPeriod(companyId, periodId, period, data) {
+  const company = (data.companies || []).find(c => c.id === companyId) || {};
+  const periodStatus = companyPeriodStatus(companyId, periodId, data);
   const salary = activeSalaryForPeriod(companyId, period, data.salaryRates);
+  const salaryEnabled = salaryEnabledFromStatus(company, periodStatus);
+  const salarySum = salaryEnabled ? n(salary.amount_sum) : 0;
+  const salaryUsd = salaryEnabled ? n(salary.amount_usd) : 0;
   const serviceList = data.services.filter(s => s.company_id === companyId && s.period_id === periodId);
   const servicesSum = serviceList.reduce((acc, s) => acc + moneyFromInputs(s.amount_sum, s.amount_usd, s.exchange_rate), 0);
   const servicesUsd = serviceList.reduce((acc, s) => acc + n(s.amount_usd), 0);
+  const periodStatusValue = periodStatus?.status || (salaryEnabled ? 'active' : (company.status || 'no_salary'));
   return {
-    salary_sum: n(salary.amount_sum),
-    salary_usd: n(salary.amount_usd),
+    salary_sum: salarySum,
+    salary_usd: salaryUsd,
+    base_salary_sum: n(salary.amount_sum),
+    base_salary_usd: n(salary.amount_usd),
+    salary_enabled: salaryEnabled,
     salary_rate: salary,
+    company_status: company.status || 'active',
+    period_status_id: periodStatus?.id || null,
+    period_status: periodStatusValue,
+    period_status_label: salaryEnabled ? statusLabel(periodStatusValue) : 'Maosh hisoblanmaydi',
+    period_status_comment: periodStatus?.comment || '',
     services_sum: servicesSum,
     services_usd: servicesUsd,
-    charged_sum: n(salary.amount_sum) + servicesSum,
+    charged_sum: salarySum + servicesSum,
     service_count: serviceList.length
   };
 }
@@ -317,6 +359,9 @@ function buildDashboard(selectedPeriodId, data) {
     }
     const previousDebt = oldDebtItems.reduce((acc, it) => acc + it.debt_sum, 0);
     const totalDebt = previousDebt + current.current_debt;
+    const paymentStatus = (!current.salary_enabled && current.charged_sum <= 0 && current.paid_sum <= 0 && totalDebt <= 0)
+      ? 'maosh hisoblanmaydi'
+      : statusFromAmounts(current.charged_sum, current.paid_sum, totalDebt);
     return {
       company_id: company.id,
       company_name: company.name,
@@ -324,8 +369,17 @@ function buildDashboard(selectedPeriodId, data) {
       director_name: company.director_name,
       phone: company.phone,
       note: company.note,
+      company_status: company.status || 'active',
+      company_status_label: statusLabel(company.status || 'active'),
+      period_status_id: current.period_status_id,
+      period_status: current.period_status,
+      period_status_label: current.period_status_label,
+      period_status_comment: current.period_status_comment,
+      salary_enabled: current.salary_enabled,
       salary_sum: current.salary_sum,
       salary_usd: current.salary_usd,
+      base_salary_sum: current.base_salary_sum,
+      base_salary_usd: current.base_salary_usd,
       services_sum: current.services_sum,
       service_count: current.service_count,
       opening_debt_sum: current.opening_debt_sum,
@@ -333,11 +387,13 @@ function buildDashboard(selectedPeriodId, data) {
       charged_sum: current.charged_sum,
       obligation_sum: current.obligation_sum,
       paid_sum: current.paid_sum,
+      paid_to_current_sum: current.paid_to_current_sum,
+      paid_to_opening_sum: current.paid_to_opening_sum,
       current_debt: current.current_debt,
       previous_debt: previousDebt,
       total_debt: totalDebt,
       overpaid_sum: current.overpaid_sum,
-      status: statusFromAmounts(current.charged_sum, current.paid_sum, totalDebt),
+      status: paymentStatus,
       salary_effective_from: current.salary_rate.effective_from,
       old_debt_items: oldDebtItems
     };
@@ -352,7 +408,9 @@ function buildDashboard(selectedPeriodId, data) {
   const totalSalary = companyRows.reduce((acc, r) => acc + r.salary_sum, 0);
   const totalService = companyRows.reduce((acc, r) => acc + r.services_sum, 0);
   const totalOpeningDebt = companyRows.reduce((acc, r) => acc + r.opening_debt_sum, 0);
-  const totalPaid = periodPayments.reduce((acc, p) => acc + p.amount_sum, 0);
+  const totalPaid = periodPayments.reduce((acc, p) => acc + p.amount_sum, 0); // tanlangan oyda kassaga/bankka kelgan jami pul
+  const totalCurrentPaid = companyRows.reduce((acc, r) => acc + r.paid_to_current_sum, 0); // faqat joriy oy xizmatlariga yopilgan tushum
+  const oldDebtCollected = Math.max(totalPaid - totalCurrentPaid, 0); // eski qarz/avans bo‘yicha kelgan pul, oylik tushumga kirmaydi
   const totalExpenses = periodExpenses.reduce((acc, e) => acc + e.amount_sum, 0);
   const totalDebt = companyRows.reduce((acc, r) => acc + r.total_debt, 0);
   const oldDebt = companyRows.reduce((acc, r) => acc + r.previous_debt, 0);
@@ -362,9 +420,11 @@ function buildDashboard(selectedPeriodId, data) {
   const chart = periodsForChart.map(p => {
     const rowsForP = companiesActive.map(c => companyPeriodBalance(c.id, p, data));
     const income = rowsForP.reduce((acc, r) => acc + r.charged_sum, 0);
-    const pay = data.payments.filter(x => x.period_id === p.id).reduce((acc, x) => acc + moneyFromInputs(x.amount_sum, x.amount_usd, x.exchange_rate), 0);
+    const pay = rowsForP.reduce((acc, r) => acc + r.paid_to_current_sum, 0);
+    const cashIn = data.payments.filter(x => x.period_id === p.id).reduce((acc, x) => acc + moneyFromInputs(x.amount_sum, x.amount_usd, x.exchange_rate), 0);
+    const oldCollected = Math.max(cashIn - pay, 0);
     const exp = data.expenses.filter(x => x.period_id === p.id).reduce((acc, x) => acc + moneyFromInputs(x.amount_sum, x.amount_usd, x.exchange_rate), 0);
-    return { label: monthNameUz(p.month).slice(0, 3), income, paid: pay, expenses: exp, profit: pay - exp };
+    return { label: monthNameUz(p.month).slice(0, 3), income, paid: pay, old_collected: oldCollected, cash_in: cashIn, expenses: exp, profit: pay - exp };
   });
 
   const companyById = new Map(data.companies.map(c => [c.id, c]));
@@ -391,13 +451,17 @@ function buildDashboard(selectedPeriodId, data) {
       total_opening_debt: totalOpeningDebt,
       total_charged: totalCharged,
       total_paid: totalPaid,
+      total_current_paid: totalCurrentPaid,
+      old_debt_collected: oldDebtCollected,
+      total_cash_in: totalPaid,
       total_expenses: totalExpenses,
       calculated_profit: totalCharged - totalExpenses,
-      real_profit: totalPaid - totalExpenses,
+      real_profit: totalCurrentPaid - totalExpenses,
+      cash_result: totalPaid - totalExpenses,
       total_debt: totalDebt,
       old_debt: oldDebt,
       current_debt: currentDebt,
-      expected_income: totalDebt,
+      expected_income: currentDebt,
       expected_old_debt: oldDebt,
       expected_current_debt: currentDebt,
       companies_count: companyRows.length
@@ -410,6 +474,7 @@ function buildDashboard(selectedPeriodId, data) {
     expenses: expensesFull,
     services: servicesFull,
     opening_debts: openingFull,
+    period_statuses: (data.companyPeriodStatuses || []).filter(x => x.period_id === selectedPeriod.id),
     chart
   };
 }
@@ -454,7 +519,7 @@ function asyncRoute(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
 
-app.get('/api/health', (req, res) => res.json({ ok: true, app: 'ALL FINANCE CASH', version: '1.6.0', time: new Date().toISOString() }));
+app.get('/api/health', (req, res) => res.json({ ok: true, app: 'ALL FINANCE CASH', version: '1.8.0', time: new Date().toISOString() }));
 
 app.post('/api/setup/create-admin', asyncRoute(async (req, res) => {
   const { setup_token, login, password, full_name } = req.body || {};
@@ -528,7 +593,7 @@ app.get('/api/companies', auth, asyncRoute(async (req, res) => {
 app.post('/api/companies', auth, requireAdmin, asyncRoute(async (req, res) => {
   const body = req.body || {};
   if (!body.name) return res.status(400).json({ error: 'Korxona nomi majburiy' });
-  const companyRow = { name: body.name, stir: body.stir || '', director_name: body.director_name || '', phone: body.phone || '', note: body.note || '', status: 'active' };
+  const companyRow = { name: body.name, stir: body.stir || '', director_name: body.director_name || '', phone: body.phone || '', note: body.note || '', status: body.status || 'active' };
   const { data: company, error } = await supabase.from('afc_companies').insert(companyRow).select('*').single();
   if (error) throw error;
   const salary = {
@@ -580,6 +645,57 @@ app.delete('/api/companies/:id/hard-delete', auth, requireAdmin, asyncRoute(asyn
   const { error } = await supabase.from('afc_companies').delete().eq('id', req.params.id);
   if (error) throw error;
   await writeAudit(req, 'hard_delete', 'afc_companies', req.params.id, before, null, 'Korxona bazadan butunlay o‘chirildi');
+  res.json({ ok: true });
+}));
+
+
+app.put('/api/companies/:id/period-status', auth, requireAdmin, asyncRoute(async (req, res) => {
+  const body = req.body || {};
+  const periodId = body.period_id;
+  if (!periodId) return res.status(400).json({ error: 'Davr majburiy' });
+  await assertPeriodOpen(periodId);
+  const status = body.status || 'active';
+  const noSalary = ['no_salary', 'paused', 'inactive'].includes(String(status).toLowerCase());
+  const salaryEnabled = noSalary ? false : !(String(body.salary_enabled).toLowerCase() === 'false' || body.salary_enabled === false || body.salary_enabled === '0');
+  const { data: before, error: beforeError } = await supabase
+    .from('afc_company_period_statuses')
+    .select('*')
+    .eq('company_id', req.params.id)
+    .eq('period_id', periodId)
+    .maybeSingle();
+  if (beforeError) throw beforeError;
+  const row = {
+    company_id: req.params.id,
+    period_id: periodId,
+    status,
+    salary_enabled: salaryEnabled,
+    comment: body.comment || '',
+    created_by: req.user.id,
+    updated_at: new Date().toISOString()
+  };
+  const { data, error } = await supabase
+    .from('afc_company_period_statuses')
+    .upsert(row, { onConflict: 'company_id,period_id' })
+    .select('*')
+    .single();
+  if (error) throw error;
+  await writeAudit(req, before ? 'update' : 'insert', 'afc_company_period_statuses', data.id, before, data, salaryEnabled ? 'Korxonaning davr statusi yangilandi' : 'Ushbu davr uchun ish haqi hisoblanmaydi');
+  res.json({ period_status: data });
+}));
+
+app.delete('/api/companies/:id/period-status/:periodId', auth, requireAdmin, asyncRoute(async (req, res) => {
+  await assertPeriodOpen(req.params.periodId);
+  const { data: before, error: beforeError } = await supabase
+    .from('afc_company_period_statuses')
+    .select('*')
+    .eq('company_id', req.params.id)
+    .eq('period_id', req.params.periodId)
+    .maybeSingle();
+  if (beforeError) throw beforeError;
+  if (!before) return res.json({ ok: true });
+  const { error } = await supabase.from('afc_company_period_statuses').delete().eq('id', before.id);
+  if (error) throw error;
+  await writeAudit(req, 'delete', 'afc_company_period_statuses', before.id, before, null, 'Davr statusi bekor qilindi');
   res.json({ ok: true });
 }));
 
@@ -906,11 +1022,12 @@ function sendCsv(res, filename, headers, rows) {
 app.get('/api/export/monthly.csv', auth, asyncRoute(async (req, res) => {
   const data = await getAllData();
   const dash = buildDashboard(req.query.period_id, data);
-  const headers = ['Korxona','STIR','Rahbar','Telefon','Ish haqi','Qo‘shimcha xizmat','Davr boshidagi qarz','Hisoblangan','To‘langan','Oldingi qarz','Joriy qarz','Jami qarz','Holat'];
+  const headers = ['Korxona','STIR','Rahbar','Telefon','Korxona statusi','Davr statusi','Ish haqi hisoblandi','Ish haqi','Qo‘shimcha xizmat','Davr boshidagi qarz','Hisoblangan','Joriy to‘langan','Eski qarz hisobda','Joriy qarz','Jami qarz','Holat'];
   const rows = (dash.companies || []).map(r => ({
     'Korxona': r.company_name, 'STIR': r.stir, 'Rahbar': r.director_name, 'Telefon': r.phone,
+    'Korxona statusi': r.company_status_label, 'Davr statusi': r.period_status_label, 'Ish haqi hisoblandi': r.salary_enabled ? 'ha' : 'yo‘q',
     'Ish haqi': r.salary_sum, 'Qo‘shimcha xizmat': r.services_sum, 'Davr boshidagi qarz': r.opening_debt_sum,
-    'Hisoblangan': r.charged_sum, 'To‘langan': r.paid_sum, 'Oldingi qarz': r.previous_debt,
+    'Hisoblangan': r.charged_sum, 'Joriy to‘langan': r.paid_to_current_sum, 'Eski qarz hisobda': r.previous_debt,
     'Joriy qarz': r.current_debt, 'Jami qarz': r.total_debt, 'Holat': r.status
   }));
   sendCsv(res, `all_finance_cash_${dash.selected_period?.period_name || 'monthly'}.csv`, headers, rows);
@@ -918,12 +1035,12 @@ app.get('/api/export/monthly.csv', auth, asyncRoute(async (req, res) => {
 
 app.get('/api/export/companies.csv', auth, asyncRoute(async (req, res) => {
   const data = await getAllData();
-  const headers = ['name','stir','director_name','phone','salary_sum','salary_usd','exchange_rate','effective_from','opening_debt_sum','opening_debt_usd','opening_debt_rate','opening_debt_comment'];
+  const headers = ['name','stir','director_name','phone','status','salary_sum','salary_usd','exchange_rate','effective_from','opening_debt_sum','opening_debt_usd','opening_debt_rate','opening_debt_comment'];
   const periods = data.periods.sort(comparePeriodAsc);
   const latestPeriod = periods.at(-1);
   const rows = data.companies.filter(c => c.status !== 'archived').map(c => {
     const salary = latestPeriod ? activeSalaryForPeriod(c.id, latestPeriod, data.salaryRates) : {};
-    return { name: c.name, stir: c.stir, director_name: c.director_name, phone: c.phone, salary_sum: salary.amount_sum || 0, salary_usd: salary.amount_usd || 0, exchange_rate: salary.exchange_rate || 0, effective_from: salary.effective_from || '', opening_debt_sum: '', opening_debt_usd: '', opening_debt_rate: '', opening_debt_comment: '' };
+    return { name: c.name, stir: c.stir, director_name: c.director_name, phone: c.phone, status: c.status || 'active', salary_sum: salary.amount_sum || 0, salary_usd: salary.amount_usd || 0, exchange_rate: salary.exchange_rate || 0, effective_from: salary.effective_from || '', opening_debt_sum: '', opening_debt_usd: '', opening_debt_rate: '', opening_debt_comment: '' };
   });
   sendCsv(res, 'all_finance_cash_companies_template.csv', headers, rows);
 }));
@@ -949,7 +1066,7 @@ app.post('/api/import/companies', auth, requireAdmin, asyncRoute(async (req, res
         const { data } = await supabase.from('afc_companies').select('*').eq('name', name).neq('status', 'archived').maybeSingle();
         company = data;
       }
-      const companyRow = { name, stir, director_name: raw.director_name || raw.Rahbar || '', phone: raw.phone || raw.Telefon || '', note: raw.note || '', status: 'active', updated_at: new Date().toISOString() };
+      const companyRow = { name, stir, director_name: raw.director_name || raw.Rahbar || '', phone: raw.phone || raw.Telefon || '', note: raw.note || '', status: raw.status || raw.Status || 'active', updated_at: new Date().toISOString() };
       if (company) {
         const { data, error } = await supabase.from('afc_companies').update(companyRow).eq('id', company.id).select('*').single();
         if (error) throw error; company = data; updated++;
